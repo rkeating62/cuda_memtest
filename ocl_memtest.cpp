@@ -16,6 +16,7 @@ extern unsigned int num_iterations;
 extern unsigned int num_passes;
 unsigned int exit_on_error = 0;
 
+extern cuda_memtest_t cuda_memtests[11];
 
 
 #define KERNEL_FILE "ocl_memtest_kernels.cpp"
@@ -100,32 +101,51 @@ const char* device_type_str(cl_device_type type)
 }
 
 
-cl_int oclGetPlatformID(cl_platform_id* clSelectedPlatformID)
+cl_int oclGetPlatformID(int platform_index, cl_platform_id* clSelectedPlatformID)
 {
   char chBuffer[1024];
   cl_uint num_platforms;
   cl_platform_id* clPlatformIDs;
   cl_int rc;
-  *clSelectedPlatformID = NULL;
+  if(clSelectedPlatformID != NULL){
+    *clSelectedPlatformID = NULL;
+  }
 
   // Get OpenCL platform count
   rc = clGetPlatformIDs (0, NULL, &num_platforms); CLERR;
 
   if(num_platforms == 0){
     printf("ERROR: no OpenCL platform found!\n\n");
-    return -2000;
+    return -3000;
   }
   
   // if there's a platform or more, make space for ID's
   if ((clPlatformIDs = (cl_platform_id*)malloc(num_platforms * sizeof(cl_platform_id))) == NULL){
     printf("ERROR: failed to allocate memory for cl_platform ID's!\n\n");
-    return -3000;
+    return -5000;
   }
   
   // get platform info for each platform and trap the NVIDIA platform if found
   rc = clGetPlatformIDs (num_platforms, clPlatformIDs, NULL); CLERR;
 
-  *clSelectedPlatformID = clPlatformIDs[0];
+  if(platform_index < 0){
+    char strbuf[128];
+    printf("\nOpenCL Platforms:\n-----------------\n");
+    for(int i = 0; i < num_platforms; ++i){
+      rc = clGetPlatformInfo (clPlatformIDs[i], CL_PLATFORM_NAME, sizeof(strbuf), strbuf, NULL); CLERR;
+      printf("[%d] Platform: %s, ", i, strbuf);
+      rc = clGetPlatformInfo (clPlatformIDs[i], CL_PLATFORM_VERSION, sizeof(strbuf), strbuf, NULL); CLERR;
+      printf("Version: %s\n", strbuf);
+    }
+    printf("\n");
+  } else if(platform_index >= num_platforms){
+    printf("ERROR: platform-index (%d) greater than max platform-index (%d).\n", platform_index, num_platforms-1);
+    return -4000;
+  }
+
+  if (platform_index >= 0 && clSelectedPlatformID != NULL){
+    *clSelectedPlatformID = clPlatformIDs[platform_index];
+  }
 
   free(clPlatformIDs);
   return CL_SUCCESS;
@@ -207,16 +227,34 @@ allocate_device_mem(memtest_control_t* mc)
   return CL_SUCCESS;
 }
 
+void list_tests_info(void)
+{
+    size_t i;
+    for (i = 0;i < DIM(cuda_memtests); i++){
+	printf("%s %s\n", cuda_memtests[i].desc, cuda_memtests[i].enabled?"":" ==disabled by default==");
+    }
+    return;
+}
+
 void
 usage(const char** argv)
 {
   printf("usage: %s [options]\n", argv[0]);
   printf("The available options are: \n");
-  printf("--device <devid>       #device ID, on which the test will perform\n");
-  printf("--num_passes <n>       #num of passes to run tests\n");
-  printf("--num_iterations <n>   #num of iterations in test10 in each pass\n");
-  printf("--exit_on_error        #exit the prorgam when memory errors are detected\n");
-  printf("--help                 #print out this message\n");
+  printf("--device <devid>            device ID, on which the test will perform\n");
+  printf("--device_count <n>          number of devices to test (default is all unless device is specified.)\n");
+  printf("--platform <n>              index of the OpenCL platform to use (default is 0).\n");
+  printf("--list_platforms            list available OpenCL platforms and exit.\n");
+  printf("--list_devices              list available OpenCL devices for platform exit.\n");
+  printf("--disable_all               Disable all tests\n");
+  printf("--enable_test <test_idx>    Enable the test <test_idx>\n");
+  printf("--disable_test <test_idx>   Disable the test <test_idx>\n");
+  printf("--list_tests                List all test descriptions\n");
+  printf("--num_passes <n>            num of passes to run tests\n");
+  printf("--num_iterations <n>        num of iterations in test10 in each pass\n");
+  printf("--exit_on_error             exit the prorgam when memory errors are detected\n");
+  printf("--random                    Random test. Equivalent to --disable_all --enable_test 7 --exit_on_error --num_passes 1\n");
+  printf("--help                      print out this message\n");
   exit(1);
 }
 
@@ -226,6 +264,10 @@ main(const int argc, const char **argv)
   memtest_control_t memtest_ctl[MAX_NUM_DEVICES];
   
   int dev_id = -1;
+  int device_count = -1;
+  int platform_index = 0;
+  bool list_platforms = false;
+  bool list_devices = false;
   int i;
   
   if (argc >=2 ){
@@ -254,6 +296,42 @@ main(const int argc, const char **argv)
       usage(argv);
     }
     
+	if (strcmp(argv[i], "--enable_test") == 0){
+	  if (i+1 >= argc){
+		usage(argv);
+	  }
+	  size_t idx = atoi(argv[i+1]);
+	  if (idx >= DIM(cuda_memtests)){
+		fprintf(stderr, "Error: invalid test id\n");
+		usage(argv);
+	  }
+
+	  cuda_memtests[idx].enabled = 1;
+
+	  i++;
+	  continue;
+	}
+	if (strcmp(argv[i], "--disable_test") == 0){
+	  if (i+1 >= argc){
+		usage(argv);
+	  }
+	  size_t idx = atoi(argv[i+1]);
+	  if (idx >= DIM(cuda_memtests)){
+		fprintf(stderr, "Error: invalid test id\n");
+		usage(argv);
+	  }
+
+	  cuda_memtests[idx].enabled = 0;
+	  i++;
+	  continue;
+	}
+	if (strcmp(argv[i], "--disable_all") == 0){
+	  size_t k;
+	  for (k=0;k < DIM(cuda_memtests);k++){
+		cuda_memtests[k].enabled = 0;
+	  }
+	  continue;
+	}
     if( strcmp(argv[i], "--device") == 0){
       if (i+1 >= argc){
         usage(argv);
@@ -266,7 +344,30 @@ main(const int argc, const char **argv)
       i++;
       continue;
     }
-    
+	if (strcmp(argv[i], "--device_count") == 0){
+      if (i+1 >= argc){
+		usage(argv);
+	  }
+	    device_count = atoi(argv[i+1]);
+	    i++;
+	    continue;
+	}
+	if (strcmp(argv[i], "--platform") == 0){
+      if (i+1 >= argc){
+		usage(argv);
+	  }
+	    platform_index = atoi(argv[i+1]);
+	    i++;
+	    continue;
+	}
+    if (strcmp(argv[i], "--list_platforms") == 0){
+      list_platforms = true;
+      continue;
+    }
+    if (strcmp(argv[i], "--list_devices") == 0){
+      list_devices = true;
+      continue;
+    }
     if (strcmp(argv[i], "--num_iterations") == 0){
       
       if (i+1 >= argc){
@@ -301,14 +402,35 @@ main(const int argc, const char **argv)
       continue;
     }
     
+	if (strcmp(argv[i], "--list_tests") == 0){
+	    list_tests_info();
+	    return 0;
+	}
+
+	if (strcmp(argv[i], "--random") == 0){
+	    //equal to "--disable_all --enable_test 7 --exit_on_error --num_passes 1"
+	    size_t k;
+	    for (k=0;k < DIM(cuda_memtests);k++){
+		cuda_memtests[k].enabled = 0;
+	    }
+	    cuda_memtests[7].enabled = 1;
+	    exit_on_error = 1;
+	    num_passes = 1;
+	    continue;
+	}
 
     printf("ERROR: invalid argument (%s)\n", argv[i]);
     usage(argv);
   }
 
 
+  if(list_platforms){
+    cl_int rc = oclGetPlatformID (-1, NULL);CLERR;
+    exit(0);
+  }
+
   cl_platform_id clSelectedPlatformID = NULL;
-  cl_int rc = oclGetPlatformID (&clSelectedPlatformID);CLERR;
+  cl_int rc = oclGetPlatformID (platform_index, &clSelectedPlatformID);CLERR;
   
   char strbuf[128];
   rc = clGetPlatformInfo (clSelectedPlatformID, CL_PLATFORM_NAME, sizeof(strbuf), strbuf, NULL); CLERR;
@@ -318,32 +440,43 @@ main(const int argc, const char **argv)
   printf("CL_PLATFORM_VERSION: \t%s\n", strbuf);
   
   // Find out how many devices there are
-  cl_uint device_count;
-  rc  = clGetDeviceIDs (clSelectedPlatformID, CL_DEVICE_TYPE_GPU, 0, NULL, &device_count); CLERR;
-  if (device_count == 0){
+  cl_uint device_count_system;
+  rc  = clGetDeviceIDs (clSelectedPlatformID, CL_DEVICE_TYPE_GPU, 0, NULL, &device_count_system); CLERR;
+  if (device_count_system == 0){
     printf("ERROR: No openCL device found!\n");
     exit(1);
   }
        
-  cl_device_id* devices = (cl_device_id*) malloc(sizeof(cl_device_id) * device_count);
-  rc = clGetDeviceIDs (clSelectedPlatformID, CL_DEVICE_TYPE_GPU, device_count, devices, &device_count); CLERR;
+  cl_device_id* devices = (cl_device_id*) malloc(sizeof(cl_device_id) * device_count_system);
+  rc = clGetDeviceIDs (clSelectedPlatformID, CL_DEVICE_TYPE_GPU, device_count_system, devices, &device_count_system); CLERR;
   
-  if (device_count <= 0){
+  if (device_count_system <= 0){
     printf("ERROR: no device found\n");
     exit(1);
   }
-  if (dev_id >= ((int)device_count)){
+  if (dev_id >= ((int)device_count_system)){
     printf("ERROR: invalid device id (%d)\n", dev_id);
     exit(1);
   }
 
-  int starti = 0;
-  int endi=device_count;;
-  if (dev_id >= 0){
+  if (dev_id == -1){
+    dev_id = 0;
+    device_count = device_count_system;
+  } else if (device_count == -1){
     device_count = 1;
-    starti=dev_id;
-    endi = dev_id+1;
   }
+  if (device_count + dev_id > device_count_system){
+    device_count = device_count_system - dev_id;
+    printf("device_count adjusted\n"); 
+  }
+  printf("device_count=%d\n", device_count);
+  if(device_count > MAX_NUM_DEVICES){
+	fprintf(stderr, "Error: max number of devices (%d) exceeded: %d\n", MAX_NUM_DEVICES, device_count);
+    exit(-1);
+  }
+
+  int starti = dev_id;
+  int endi = dev_id + device_count;
     
   for(i=starti; i < endi; ++i ){
     clGetDeviceInfo(devices[i], CL_DEVICE_NAME, sizeof(strbuf), &strbuf, NULL);CLERR;
@@ -351,7 +484,9 @@ main(const int argc, const char **argv)
     clGetDeviceInfo(devices[i], CL_DEVICE_TYPE, sizeof(cl_device_type), &device_type, NULL);
     printf("                  \tDevice %d is %s, \"%s\"\n", i, device_type_str(device_type), strbuf);
   }
-  
+  if(list_devices){
+    exit(0);
+  }  
 
   cl_context contexts[MAX_NUM_DEVICES];
   for(i=starti;i < endi;i++){
@@ -403,13 +538,13 @@ main(const int argc, const char **argv)
   /*
   int loop_count =0;
   while(loop_count < 2){
-    for(i=0;i < device_count; i++){
+    for(i=0;i < device_count_system; i++){
       memtest_control_t * mc = &memtest_ctl[i];
       printf("Running tests  in device %d\n", i);
       test10(mc);
     }//i
     
-    for(i=0;i < device_count; i ++){
+    for(i=0;i < device_count_system; i ++){
       memtest_control_t * mc = &memtest_ctl[i];
       clFinish(mc->queue);
     }

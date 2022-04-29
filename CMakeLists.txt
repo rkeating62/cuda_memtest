@@ -105,6 +105,23 @@ else()
 endif()
 
 ################################################################################
+# Compile & Link ocl_memtest
+################################################################################
+
+add_executable(ocl_memtest
+        ocl_tests.cpp
+        ocl_memtest.cpp
+        )
+
+target_include_directories(ocl_memtest PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}) 
+target_link_libraries(ocl_memtest PRIVATE OpenCL)
+
+
+if(NOT MSVC)
+    target_link_libraries(ocl_memtest PRIVATE Threads::Threads)
+endif()
+
+################################################################################
 # Build type (debug, release)
 ################################################################################
 
